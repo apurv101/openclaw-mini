@@ -1,0 +1,41 @@
+{
+  "name": "openclaw-mini",
+  "version": "0.1.0",
+  "description": "Terminal-only AI agent with full openclaw-mini intelligence",
+  "type": "module",
+  "main": "dist/entry.js",
+  "bin": {
+    "openclaw-mini": "dist/entry.js"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "node --import tsx src/entry.ts",
+    "start": "node dist/entry.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.3",
+    "@mariozechner/pi-agent-core": "0.52.12",
+    "@mariozechner/pi-ai": "0.52.12",
+    "@mariozechner/pi-coding-agent": "0.52.12",
+    "@mozilla/readability": "^0.6.0",
+    "dotenv": "^17.3.1",
+    "linkedom": "^0.18.12"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "tsdown": "^0.20.3",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "packageManager": "pnpm@10.23.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@lydell/node-pty",
+      "sharp"
+    ]
+  }
+}
