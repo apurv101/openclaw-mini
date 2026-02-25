@@ -11,12 +11,17 @@ import path from "node:path";
 import os from "node:os";
 import readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
   SessionManager,
   SettingsManager,
   AuthStorage,
   ModelRegistry,
+  DefaultResourceLoader,
+  loadSkillsFromDir,
+  formatSkillsForPrompt,
+  type Skill,
 } from "@mariozechner/pi-coding-agent";
 import { streamSimple } from "@mariozechner/pi-ai";
 import type { Api, Model } from "@mariozechner/pi-ai";
@@ -37,6 +42,11 @@ const AGENT_DIR = path.join(OPENCLAW_HOME, "agents", AGENT_ID, "agent");
 const MODELS_JSON = path.join(AGENT_DIR, "models.json");
 const AUTH_PROFILES_JSON = path.join(AGENT_DIR, "auth-profiles.json");
 const SESSION_DIR = path.join(OPENCLAW_HOME, "state", "sessions", "mini");
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const BUNDLED_SKILLS_DIR = path.join(__dirname, "..", "skills");
+const USER_SKILLS_DIR = path.join(AGENT_DIR, "skills");
 
 const DEFAULT_PROVIDER = process.env.OPENCLAW_MINI_PROVIDER ?? "anthropic";
 const DEFAULT_MODEL = process.env.OPENCLAW_MINI_MODEL ?? "claude-sonnet-4-20250514";
@@ -168,6 +178,37 @@ function buildCustomTools() {
   return tools;
 }
 
+// ─── Skill discovery ────────────────────────────────────────────────────────
+
+function discoverSkills(workspaceDir: string): { skills: Skill[]; diagnostics: string[] } {
+  const skillMap = new Map<string, Skill>();
+  const diagnostics: string[] = [];
+
+  const sources: Array<{ dir: string; source: string }> = [
+    { dir: USER_SKILLS_DIR, source: "user" },
+    { dir: path.join(workspaceDir, ".openclaw-mini", "skills"), source: "project" },
+    { dir: BUNDLED_SKILLS_DIR, source: "bundled" },
+  ];
+
+  for (const { dir, source } of sources) {
+    try {
+      const result = loadSkillsFromDir({ dir, source });
+      for (const diag of result.diagnostics) {
+        diagnostics.push(`[${source}] ${diag.message}`);
+      }
+      for (const skill of result.skills) {
+        if (!skillMap.has(skill.name)) {
+          skillMap.set(skill.name, skill);
+        }
+      }
+    } catch {
+      // Directory doesn't exist — skip silently
+    }
+  }
+
+  return { skills: Array.from(skillMap.values()), diagnostics };
+}
+
 // ─── System prompt override ──────────────────────────────────────────────────
 
 function applySystemPromptToSession(
@@ -250,12 +291,20 @@ async function main() {
   const builtInToolNames = ["read", "bash", "edit", "write"];
   const allToolNames = [...builtInToolNames, ...customToolNames];
 
+  // Discover skills
+  const { skills, diagnostics: skillDiagnostics } = discoverSkills(workspaceDir);
+  for (const diag of skillDiagnostics) {
+    console.error(`\x1b[33mSkill warning: ${diag}\x1b[0m`);
+  }
+  const skillsPrompt = skills.length > 0 ? formatSkillsForPrompt(skills) : undefined;
+
   const systemPrompt = buildSystemPrompt({
     workspaceDir,
     runtime,
     toolNames: allToolNames,
     contextFiles,
     thinkingLevel,
+    skillsPrompt,
   });
 
   console.log(`\x1b[2m┌ openclaw-mini\x1b[0m`);
@@ -266,7 +315,8 @@ async function main() {
     `\x1b[2m│ context: ${contextFiles.length > 0 ? contextFiles.map((f) => f.path).join(", ") : "none"}\x1b[0m`,
   );
   console.log(`\x1b[2m│ tools: ${allToolNames.join(", ")}\x1b[0m`);
-  console.log(`\x1b[2m└ /new /think /model /quit\x1b[0m`);
+  console.log(`\x1b[2m│ skills: ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : "none"}\x1b[0m`);
+  console.log(`\x1b[2m└ /new /think /model /skills /quit\x1b[0m`);
   console.log();
 
   const rl = readline.createInterface({ input: stdin, output: stdout });
@@ -317,8 +367,22 @@ async function main() {
       console.log(`\x1b[2mThinking: ${thinkingLevel}\x1b[0m`);
       console.log(`\x1b[2mWorkspace: ${workspaceDir}\x1b[0m`);
       console.log(
-        `\x1b[2mContext files: ${contextFiles.length > 0 ? contextFiles.map((f) => f.path).join(", ") : "none"}\x1b[0m\n`,
+        `\x1b[2mContext files: ${contextFiles.length > 0 ? contextFiles.map((f) => f.path).join(", ") : "none"}\x1b[0m`,
       );
+      console.log(`\x1b[2mSkills: ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : "none"}\x1b[0m\n`);
+      continue;
+    }
+    if (trimmed === "/skills") {
+      if (skills.length === 0) {
+        console.log(`\x1b[2mNo skills loaded.\x1b[0m\n`);
+      } else {
+        console.log(`\x1b[2mLoaded skills (${skills.length}):\x1b[0m`);
+        for (const skill of skills) {
+          const src = `[${skill.source}]`.padEnd(10);
+          console.log(`\x1b[2m  ${src} ${skill.name} — ${skill.description}\x1b[0m`);
+        }
+        console.log();
+      }
       continue;
     }
 
@@ -328,6 +392,18 @@ async function main() {
       const sessionManager = SessionManager.open(sessionFile);
       const settingsManager = SettingsManager.create(workspaceDir, AGENT_DIR);
 
+      // Build resource loader with skill paths for SDK's /skill:name expansion
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: workspaceDir,
+        agentDir: AGENT_DIR,
+        settingsManager,
+        additionalSkillPaths: [USER_SKILLS_DIR, path.join(workspaceDir, ".openclaw-mini", "skills"), BUNDLED_SKILLS_DIR],
+        noExtensions: true,
+        noPromptTemplates: true,
+        noThemes: true,
+      });
+      await resourceLoader.reload();
+
       // Rebuild system prompt with current thinking level
       const currentSystemPrompt = buildSystemPrompt({
         workspaceDir,
@@ -335,6 +411,7 @@ async function main() {
         toolNames: allToolNames,
         contextFiles,
         thinkingLevel,
+        skillsPrompt,
       });
 
       const { session } = await createAgentSession({
@@ -347,6 +424,7 @@ async function main() {
         customTools,
         sessionManager,
         settingsManager,
+        resourceLoader,
       });
 
       // Override the SDK's default system prompt with our enriched one

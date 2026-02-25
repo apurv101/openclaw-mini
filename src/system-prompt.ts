@@ -90,8 +90,9 @@ export function buildSystemPrompt(params: {
   toolNames: string[];
   contextFiles: ContextFile[];
   thinkingLevel?: string;
+  skillsPrompt?: string;
 }): string {
-  const { workspaceDir, runtime, toolNames, contextFiles, thinkingLevel } = params;
+  const { workspaceDir, runtime, toolNames, contextFiles, thinkingLevel, skillsPrompt } = params;
 
   const availableTools = new Set(toolNames.map((t) => t.toLowerCase()));
 
@@ -151,6 +152,11 @@ export function buildSystemPrompt(params: {
       "- llms.txt is an emerging standard (like robots.txt for AI) — not all sites have one, so don't warn if missing",
       "",
     );
+  }
+
+  // Skills catalog
+  if (skillsPrompt) {
+    lines.push("## Skills", skillsPrompt, "");
   }
 
   // Context files
