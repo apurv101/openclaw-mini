@@ -205,6 +205,64 @@ git checkout part-2/skill-plugin-system
 
 ---
 
+## Part 3: The Meta Skill
+
+Part 3 adds a meta skill — a bundled `skill-creator` that lets the agent create new skills on the fly during a conversation. It also adds hot-reload so newly created skills are available immediately without restarting.
+
+### What you get
+
+- **`skill-creator` bundled skill** — ask the agent "create a skill that does X" and it writes a complete `SKILL.md` for you, placed in the right directory.
+- **Hot-reload** — skills are re-discovered on every prompt. A skill created mid-session is available on the very next prompt, no restart needed.
+
+### How it works
+
+1. Tell the agent what you want: *"create a skill that generates changelog entries"*
+2. The `skill-creator` skill activates and asks clarifying questions (what it should do, user vs project scope)
+3. The agent writes the `SKILL.md` to your skills directory using `bash` + `write`
+4. On your next prompt, the new skill is discovered and ready to use
+
+### Try it
+
+```
+> create a skill that generates release notes from git history
+
+I'll create a "release-notes" skill for you.
+
+What scope should it have?
+- User skill (available in all projects) — default
+- Project skill (shared with the team)
+
+Creating user skill...
+[tools: bash, write, read]
+✓ Created ~/.openclaw-mini/agents/main/agent/skills/release-notes/SKILL.md
+
+The skill is available now. Try: "generate release notes for the last 5 commits"
+
+> /skills
+Loaded skills (6):
+  [bundled]  git-commit — Create well-structured git commits with conventional commit messages
+  [bundled]  code-review — Review code changes for bugs, style issues, and improvement opportunities
+  [bundled]  skill-creator — Create new skills for openclaw-mini
+  [bundled]  summarize — Summarize files, directories, or project structure into concise overviews
+  [bundled]  weather — Fetch current weather and forecasts for any location
+  [user]     release-notes — Generate release notes from git commit history
+```
+
+### What changed
+
+| File | Change |
+|---|---|
+| `skills/skill-creator/SKILL.md` | New bundled skill — guides the agent through creating skills |
+| `src/entry.ts` | Skills re-discovered each prompt for hot-reload (~4 lines moved into the REPL loop) |
+
+### Branch
+
+```
+git checkout part-3/meta-skill
+```
+
+---
+
 ## Project Structure
 
 ```
@@ -218,6 +276,8 @@ skills/
 ├── git-commit/        # Conventional commit workflow
 │   └── SKILL.md
 ├── code-review/       # Structured code review checklist
+│   └── SKILL.md
+├── skill-creator/     # Meta skill — creates new skills on the fly
 │   └── SKILL.md
 ├── summarize/         # File/project summarization
 │   └── SKILL.md

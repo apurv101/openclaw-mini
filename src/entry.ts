@@ -291,12 +291,9 @@ async function main() {
   const builtInToolNames = ["read", "bash", "edit", "write"];
   const allToolNames = [...builtInToolNames, ...customToolNames];
 
-  // Discover skills
-  const { skills, diagnostics: skillDiagnostics } = discoverSkills(workspaceDir);
-  for (const diag of skillDiagnostics) {
-    console.error(`\x1b[33mSkill warning: ${diag}\x1b[0m`);
-  }
-  const skillsPrompt = skills.length > 0 ? formatSkillsForPrompt(skills) : undefined;
+  // Discover skills (initial load for startup banner; re-discovered each prompt for hot-reload)
+  let { skills } = discoverSkills(workspaceDir);
+  let skillsPrompt = skills.length > 0 ? formatSkillsForPrompt(skills) : undefined;
 
   const systemPrompt = buildSystemPrompt({
     workspaceDir,
@@ -391,6 +388,11 @@ async function main() {
     try {
       const sessionManager = SessionManager.open(sessionFile);
       const settingsManager = SettingsManager.create(workspaceDir, AGENT_DIR);
+
+      // Re-discover skills each prompt to pick up newly created ones (hot-reload)
+      const freshSkills = discoverSkills(workspaceDir);
+      skills = freshSkills.skills;
+      skillsPrompt = skills.length > 0 ? formatSkillsForPrompt(skills) : undefined;
 
       // Build resource loader with skill paths for SDK's /skill:name expansion
       const resourceLoader = new DefaultResourceLoader({
