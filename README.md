@@ -263,15 +263,75 @@ git checkout part-3/meta-skill
 
 ---
 
+## Part 4: Tool Loop Detection
+
+Part 4 adds a circuit breaker that detects when the agent is stuck in a tool loop and stops it, plus a `/verbose` command for real-time observability.
+
+### What you get
+
+- **Tool loop circuit breaker** — a sliding window of the last 30 tool calls with four pattern detectors that catch repeated calls, no-progress streaks, and ping-pong alternation. Progressive escalation: warn at 10 repetitions, block at 20, hard circuit breaker at 30.
+- **`/verbose` toggle** — real-time logging of every tool call, execution time, thinking events, and turn boundaries. Logs to stderr so it doesn't interfere with agent output.
+
+### How it works
+
+1. Every tool's `execute()` is wrapped with a decorator that runs a pre-flight check before each call
+2. A stable hasher (sorted keys, recursive) creates deterministic keys for tool calls and their results
+3. Four detectors scan the sliding window:
+   - **Generic repeat** — same tool + args called 10+ times → warning
+   - **No-progress** — same tool + args + identical result 20+ times → blocked
+   - **Ping-pong** — two tools alternating with stable results 10+ times → warning, 20+ → blocked
+   - **Global circuit breaker** — any pattern hitting 30 → hard stop
+4. Warnings print to the terminal; blocks throw an error the LLM reads and adjusts to
+
+### REPL commands (Part 4 — new)
+
+| Command | Description |
+|---|---|
+| `/verbose` | Toggle real-time tool call logging on/off |
+
+All previous commands continue to work.
+
+### Try it
+
+```
+> /verbose
+Verbose logging: on
+
+> read the package.json and tell me what this project does
+[turn 1]
+  [deciding tool call...]
+  [tool] read {"file_path":"/Users/you/project/package.json"}
+  [tool] read ✓ 0.1s
+[turn 2]
+This project is a terminal-based AI coding agent called openclaw-mini...
+(3.2s)
+```
+
+### What changed
+
+| File | Change |
+|---|---|
+| `src/tool-loop-detection.ts` | New — `ToolLoopDetector` class (~150 lines): stable hashing, sliding window, 4 detectors, progressive escalation, warning dedup, tool wrapper |
+| `src/entry.ts` | ~50 lines added — import detector, wrap all tools, `/verbose` command with `session.subscribe()`, reset on `/new` |
+
+### Branch
+
+```
+git checkout part-4/the-tool-loop
+```
+
+---
+
 ## Project Structure
 
 ```
 src/
-├── entry.ts           # Main REPL, session management, skill discovery
-├── system-prompt.ts   # System prompt builder with context and skill injection
+├── entry.ts                # Main REPL, session management, skill discovery
+├── system-prompt.ts        # System prompt builder with context and skill injection
+├── tool-loop-detection.ts  # Circuit breaker for stuck tool loops
 └── tools/
-    ├── web-fetch.ts   # URL content fetching via Mozilla Readability
-    └── web-search.ts  # Web search (Brave Search / Perplexity)
+    ├── web-fetch.ts        # URL content fetching via Mozilla Readability
+    └── web-search.ts       # Web search (Brave Search / Perplexity)
 skills/
 ├── git-commit/        # Conventional commit workflow
 │   └── SKILL.md

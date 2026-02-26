@@ -14,6 +14,7 @@ import { stdin, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
+  createCodingTools,
   SessionManager,
   SettingsManager,
   AuthStorage,
@@ -33,6 +34,7 @@ import {
 } from "./system-prompt.js";
 import { createWebFetchToolDefinition } from "./tools/web-fetch.js";
 import { createWebSearchToolDefinition } from "./tools/web-search.js";
+import { ToolLoopDetector } from "./tool-loop-detection.js";
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -269,6 +271,8 @@ async function main() {
   let sessionId = `mini-${Date.now()}`;
   let sessionFile = resolveSessionFile(sessionId);
   let thinkingLevel: ThinkingLevel = "off";
+  let verbose = false;
+  const loopDetector = new ToolLoopDetector();
 
   // Ensure API key is available
   const hasKey = ensureApiKeyInEnv(provider);
@@ -313,7 +317,7 @@ async function main() {
   );
   console.log(`\x1b[2m│ tools: ${allToolNames.join(", ")}\x1b[0m`);
   console.log(`\x1b[2m│ skills: ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : "none"}\x1b[0m`);
-  console.log(`\x1b[2m└ /new /think /model /skills /quit\x1b[0m`);
+  console.log(`\x1b[2m└ /new /think /model /skills /verbose /quit\x1b[0m`);
   console.log();
 
   const rl = readline.createInterface({ input: stdin, output: stdout });
@@ -334,6 +338,7 @@ async function main() {
     if (trimmed === "/new") {
       sessionId = `mini-${Date.now()}`;
       sessionFile = resolveSessionFile(sessionId);
+      loopDetector.reset();
       console.log(`\x1b[2mNew session: ${sessionId}\x1b[0m\n`);
       continue;
     }
@@ -367,6 +372,11 @@ async function main() {
         `\x1b[2mContext files: ${contextFiles.length > 0 ? contextFiles.map((f) => f.path).join(", ") : "none"}\x1b[0m`,
       );
       console.log(`\x1b[2mSkills: ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : "none"}\x1b[0m\n`);
+      continue;
+    }
+    if (trimmed === "/verbose") {
+      verbose = !verbose;
+      console.log(`\x1b[2mVerbose logging: ${verbose ? "on" : "off"}\x1b[0m\n`);
       continue;
     }
     if (trimmed === "/skills") {
@@ -416,6 +426,10 @@ async function main() {
         skillsPrompt,
       });
 
+      // Wrap all tools with loop detection (built-in + custom)
+      const wrappedBuiltInTools = createCodingTools(workspaceDir).map((t) => loopDetector.wrapTool(t));
+      const wrappedCustomTools = customTools.map((t: any) => loopDetector.wrapTool(t));
+
       const { session } = await createAgentSession({
         cwd: workspaceDir,
         agentDir: AGENT_DIR,
@@ -423,7 +437,8 @@ async function main() {
         modelRegistry,
         model,
         thinkingLevel,
-        customTools,
+        tools: wrappedBuiltInTools,
+        customTools: wrappedCustomTools,
         sessionManager,
         settingsManager,
         resourceLoader,
@@ -433,6 +448,41 @@ async function main() {
       applySystemPromptToSession(session, currentSystemPrompt);
 
       session.agent.streamFn = streamSimple;
+
+      // Verbose logging via session event subscription
+      let turnCount = 0;
+      const toolTimers = new Map<string, number>();
+      session.subscribe((event: any) => {
+        if (!verbose) return;
+        const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
+        switch (event.type) {
+          case "turn_start":
+            turnCount++;
+            console.error(dim(`[turn ${turnCount}]`));
+            break;
+          case "tool_execution_start":
+            toolTimers.set(event.toolCallId, Date.now());
+            console.error(dim(`  [tool] ${event.toolName} ${JSON.stringify(event.args)}`));
+            break;
+          case "tool_execution_end": {
+            const started = toolTimers.get(event.toolCallId);
+            const elapsed = started ? `${((Date.now() - started) / 1000).toFixed(1)}s` : "";
+            const status = event.isError ? "\x1b[31m✗\x1b[0m\x1b[2m" : "\x1b[32m✓\x1b[0m\x1b[2m";
+            console.error(dim(`  [tool] ${event.toolName} ${status} ${elapsed}`));
+            toolTimers.delete(event.toolCallId);
+            break;
+          }
+          case "message_update": {
+            const sub = event.assistantMessageEvent;
+            if (sub?.type === "thinking_start") {
+              console.error(dim("  [thinking...]"));
+            } else if (sub?.type === "toolcall_start") {
+              console.error(dim("  [deciding tool call...]"));
+            }
+            break;
+          }
+        }
+      });
 
       await session.prompt(trimmed);
 
