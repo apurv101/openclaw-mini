@@ -272,6 +272,8 @@ async function main() {
   let sessionFile = resolveSessionFile(sessionId);
   let thinkingLevel: ThinkingLevel = "off";
   let verbose = false;
+  let autoCompact = true;
+  let lastSession: any = null;
   const loopDetector = new ToolLoopDetector();
 
   // Ensure API key is available
@@ -317,7 +319,7 @@ async function main() {
   );
   console.log(`\x1b[2m│ tools: ${allToolNames.join(", ")}\x1b[0m`);
   console.log(`\x1b[2m│ skills: ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : "none"}\x1b[0m`);
-  console.log(`\x1b[2m└ /new /think /model /skills /verbose /quit\x1b[0m`);
+  console.log(`\x1b[2m└ /new /think /model /skills /verbose /compact /quit\x1b[0m`);
   console.log();
 
   const rl = readline.createInterface({ input: stdin, output: stdout });
@@ -336,6 +338,7 @@ async function main() {
     // Slash commands
     if (trimmed === "/quit" || trimmed === "/exit") break;
     if (trimmed === "/new") {
+      if (lastSession) { lastSession.dispose(); lastSession = null; }
       sessionId = `mini-${Date.now()}`;
       sessionFile = resolveSessionFile(sessionId);
       loopDetector.reset();
@@ -371,7 +374,8 @@ async function main() {
       console.log(
         `\x1b[2mContext files: ${contextFiles.length > 0 ? contextFiles.map((f) => f.path).join(", ") : "none"}\x1b[0m`,
       );
-      console.log(`\x1b[2mSkills: ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : "none"}\x1b[0m\n`);
+      console.log(`\x1b[2mSkills: ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : "none"}\x1b[0m`);
+      console.log(`\x1b[2mAuto-compact: ${autoCompact ? "on" : "off"}\x1b[0m\n`);
       continue;
     }
     if (trimmed === "/verbose") {
@@ -392,10 +396,41 @@ async function main() {
       }
       continue;
     }
+    if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
+      const arg = trimmed.slice("/compact".length).trim().toLowerCase();
+      if (arg === "on") {
+        autoCompact = true;
+        console.log(`\x1b[2mAuto-compaction: on\x1b[0m\n`);
+      } else if (arg === "off") {
+        autoCompact = false;
+        console.log(`\x1b[2mAuto-compaction: off\x1b[0m\n`);
+      } else {
+        if (!lastSession) {
+          console.log(`\x1b[2mNo active session to compact. Send a message first.\x1b[0m\n`);
+        } else {
+          console.log(`\x1b[2mCompacting...\x1b[0m`);
+          try {
+            const result = await lastSession.compact();
+            console.log(`\x1b[2mCompacted: ${result.tokensBefore} tokens summarized.\x1b[0m`);
+            const preview = result.summary.length > 200
+              ? result.summary.slice(0, 200) + "..."
+              : result.summary;
+            console.log(`\x1b[2mSummary: ${preview}\x1b[0m\n`);
+          } catch (compactErr: any) {
+            console.error(`\x1b[31mCompaction failed: ${compactErr.message}\x1b[0m\n`);
+          }
+        }
+      }
+      continue;
+    }
 
     // Run agent
     const startTime = Date.now();
     try {
+      // Dispose previous session before creating a new one
+      // (kept alive between prompts so /compact can access it)
+      if (lastSession) { lastSession.dispose(); lastSession = null; }
+
       const sessionManager = SessionManager.open(sessionFile);
       const settingsManager = SettingsManager.create(workspaceDir, AGENT_DIR);
 
@@ -447,24 +482,46 @@ async function main() {
       // Override the SDK's default system prompt with our enriched one
       applySystemPromptToSession(session, currentSystemPrompt);
 
+      // Apply auto-compaction setting — SDK handles threshold detection and overflow recovery
+      session.setAutoCompactionEnabled(autoCompact);
+
       session.agent.streamFn = streamSimple;
 
-      // Verbose logging via session event subscription
+      // Event subscription: compaction events always visible, tool events gated by verbose
       let turnCount = 0;
       const toolTimers = new Map<string, number>();
+      const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
       session.subscribe((event: any) => {
-        if (!verbose) return;
-        const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
         switch (event.type) {
+          // Compaction events — always shown (significant lifecycle events)
+          case "auto_compaction_start":
+            console.error(dim(`[compaction] auto-compacting (${event.reason})...`));
+            break;
+          case "auto_compaction_end":
+            if (event.result) {
+              console.error(dim(`[compaction] done — ${event.result.tokensBefore} tokens summarized`));
+            } else if (event.aborted) {
+              console.error(dim(`[compaction] aborted`));
+            } else if (event.errorMessage) {
+              console.error(dim(`[compaction] failed: ${event.errorMessage}`));
+            }
+            if (event.willRetry) {
+              console.error(dim(`[compaction] will retry...`));
+            }
+            break;
+          // Verbose-only events
           case "turn_start":
+            if (!verbose) break;
             turnCount++;
             console.error(dim(`[turn ${turnCount}]`));
             break;
           case "tool_execution_start":
+            if (!verbose) break;
             toolTimers.set(event.toolCallId, Date.now());
             console.error(dim(`  [tool] ${event.toolName} ${JSON.stringify(event.args)}`));
             break;
           case "tool_execution_end": {
+            if (!verbose) break;
             const started = toolTimers.get(event.toolCallId);
             const elapsed = started ? `${((Date.now() - started) / 1000).toFixed(1)}s` : "";
             const status = event.isError ? "\x1b[31m✗\x1b[0m\x1b[2m" : "\x1b[32m✓\x1b[0m\x1b[2m";
@@ -473,6 +530,7 @@ async function main() {
             break;
           }
           case "message_update": {
+            if (!verbose) break;
             const sub = event.assistantMessageEvent;
             if (sub?.type === "thinking_start") {
               console.error(dim("  [thinking...]"));
@@ -508,16 +566,24 @@ async function main() {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       console.log(`\x1b[2m(${elapsed}s)\x1b[0m\n`);
 
-      session.dispose();
+      // Keep session alive for /compact (disposed at start of next prompt or on /new)
+      lastSession = session;
     } catch (err: any) {
-      console.error(`\x1b[31mError: ${err.message}\x1b[0m`);
-      if (err.cause) {
-        console.error(`\x1b[2m${String(err.cause)}\x1b[0m`);
+      const msg = err.message ?? "";
+      if (/request_too_large|context.*(window|length)|prompt.*too long|request size exceeds/i.test(msg)) {
+        console.error(`\x1b[33mContext overflow: conversation too large for model.\x1b[0m`);
+        console.error(`\x1b[2mTry /compact to summarize history, or /new to start fresh.\x1b[0m`);
+      } else {
+        console.error(`\x1b[31mError: ${msg}\x1b[0m`);
+        if (err.cause) {
+          console.error(`\x1b[2m${String(err.cause)}\x1b[0m`);
+        }
       }
       console.log();
     }
   }
 
+  if (lastSession) lastSession.dispose();
   rl.close();
   console.log("\x1b[2mBye.\x1b[0m");
   process.exit(0);

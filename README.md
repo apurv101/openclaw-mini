@@ -322,6 +322,81 @@ git checkout part-4/the-tool-loop
 
 ---
 
+## Part 5: Context Compaction
+
+Part 5 adds context management — a `/compact` command for manual and automatic conversation compaction, plus context overflow recovery. Sessions are kept alive between prompts so you can compact at any time.
+
+### What you get
+
+- **`/compact` command** — three modes: `/compact` triggers manual compaction on the current session, `/compact on` and `/compact off` toggle auto-compaction (on by default).
+- **Auto-compaction** — enabled by default. The SDK monitors context size and automatically summarizes conversation history when approaching the model's context limit.
+- **Compaction event visibility** — compaction start/end events are always printed to the terminal (not gated by `/verbose`) so you always know when the context is being summarized.
+- **Context overflow recovery** — when the conversation exceeds the model's context window, a helpful error message suggests `/compact` to summarize history or `/new` to start fresh (instead of a raw API error).
+- **Session lifecycle** — sessions are kept alive between prompts (disposed at the start of the next prompt or on `/new`), allowing `/compact` to access the active session.
+
+### REPL commands (Part 5 — new)
+
+| Command | Description |
+|---|---|
+| `/compact` | Manually compact the current session (shows token count and summary preview) |
+| `/compact on` | Enable auto-compaction (default) |
+| `/compact off` | Disable auto-compaction |
+
+All previous commands continue to work. `/status` now also shows auto-compact state.
+
+### Try it
+
+```
+> /status
+Model: anthropic/claude-sonnet-4-20250514
+Session: mini-1719432000000
+Thinking: off
+Workspace: /Users/you/project
+Context files: CLAUDE.md
+Skills: git-commit, code-review, summarize, weather
+Auto-compact: on
+
+> /compact off
+Auto-compaction: off
+
+> /compact on
+Auto-compaction: on
+
+> explain this entire codebase in detail
+[long response...]
+(12.4s)
+
+> /compact
+Compacting...
+Compacted: 8432 tokens summarized.
+Summary: The codebase is a terminal AI coding agent called openclaw-mini built on the PI SDK...
+
+> /status
+Auto-compact: on
+```
+
+When the context overflows:
+
+```
+> [after many long exchanges]
+Context overflow: conversation too large for model.
+Try /compact to summarize history, or /new to start fresh.
+```
+
+### What changed
+
+| File | Change |
+|---|---|
+| `src/entry.ts` | ~75 lines added — `/compact` command handler, `autoCompact`/`lastSession` state, session kept alive between prompts, compaction events always visible, context overflow error recovery |
+
+### Branch
+
+```
+git checkout part-5/context-compaction
+```
+
+---
+
 ## Project Structure
 
 ```
