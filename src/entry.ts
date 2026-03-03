@@ -31,9 +31,11 @@ import {
   buildSystemPrompt,
   detectRuntime,
   loadContextFiles,
+  loadMemoryFile,
 } from "./system-prompt.js";
 import { createWebFetchToolDefinition } from "./tools/web-fetch.js";
 import { createWebSearchToolDefinition } from "./tools/web-search.js";
+import { createMemorySearchToolDefinition } from "./tools/memory-search.js";
 import { ToolLoopDetector } from "./tool-loop-detection.js";
 
 // ─── Configuration ───────────────────────────────────────────────────────────
@@ -44,6 +46,7 @@ const AGENT_DIR = path.join(OPENCLAW_HOME, "agents", AGENT_ID, "agent");
 const MODELS_JSON = path.join(AGENT_DIR, "models.json");
 const AUTH_PROFILES_JSON = path.join(AGENT_DIR, "auth-profiles.json");
 const SESSION_DIR = path.join(OPENCLAW_HOME, "state", "sessions", "mini");
+const MEMORY_DIR = path.join(OPENCLAW_HOME, "memory");
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -56,7 +59,7 @@ const DEFAULT_MODEL = process.env.OPENCLAW_MINI_MODEL ?? "claude-sonnet-4-202505
 // ─── Ensure directories ─────────────────────────────────────────────────────
 
 function ensureDirs() {
-  for (const dir of [OPENCLAW_HOME, AGENT_DIR, SESSION_DIR]) {
+  for (const dir of [OPENCLAW_HOME, AGENT_DIR, SESSION_DIR, MEMORY_DIR]) {
     fs.mkdirSync(dir, { recursive: true });
   }
 }
@@ -176,6 +179,9 @@ function buildCustomTools() {
 
   // Add web_search — works with BRAVE_API_KEY, PERPLEXITY_API_KEY, or OPENROUTER_API_KEY
   tools.push(createWebSearchToolDefinition());
+
+  // Persistent memory search across ~/.openclaw-mini/memory/*.md
+  tools.push(createMemorySearchToolDefinition());
 
   return tools;
 }
@@ -301,6 +307,8 @@ async function main() {
   let { skills } = discoverSkills(workspaceDir);
   let skillsPrompt = skills.length > 0 ? formatSkillsForPrompt(skills) : undefined;
 
+  let memoryContent = loadMemoryFile();
+
   const systemPrompt = buildSystemPrompt({
     workspaceDir,
     runtime,
@@ -308,6 +316,7 @@ async function main() {
     contextFiles,
     thinkingLevel,
     skillsPrompt,
+    memoryContent,
   });
 
   console.log(`\x1b[2m┌ openclaw-mini\x1b[0m`);
@@ -319,7 +328,8 @@ async function main() {
   );
   console.log(`\x1b[2m│ tools: ${allToolNames.join(", ")}\x1b[0m`);
   console.log(`\x1b[2m│ skills: ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : "none"}\x1b[0m`);
-  console.log(`\x1b[2m└ /new /think /model /skills /verbose /compact /quit\x1b[0m`);
+  console.log(`\x1b[2m│ memory: ${memoryContent ? "loaded" : "empty"} (~/.openclaw-mini/memory/)\x1b[0m`);
+  console.log(`\x1b[2m└ /new /think /model /skills /verbose /compact /memory /quit\x1b[0m`);
   console.log();
 
   const rl = readline.createInterface({ input: stdin, output: stdout });
@@ -423,6 +433,42 @@ async function main() {
       }
       continue;
     }
+    if (trimmed === "/memory") {
+      try {
+        const files = fs.readdirSync(MEMORY_DIR).filter((f) => f.endsWith(".md"));
+        if (files.length === 0) {
+          console.log(`\x1b[2mNo memory files yet.\x1b[0m`);
+          console.log(`\x1b[2mMemory dir: ${MEMORY_DIR}\x1b[0m`);
+          console.log(`\x1b[2mThe agent will create memory files as it learns.\x1b[0m\n`);
+        } else {
+          console.log(`\x1b[2mMemory files (${files.length}):\x1b[0m`);
+          let totalSize = 0;
+          for (const file of files) {
+            const stat = fs.statSync(path.join(MEMORY_DIR, file));
+            const sizeKb = (stat.size / 1024).toFixed(1);
+            totalSize += stat.size;
+            const label = file === "MEMORY.md" ? " (main)" : "";
+            console.log(`\x1b[2m  ${file}${label} — ${sizeKb} KB\x1b[0m`);
+          }
+          console.log(`\x1b[2m  total: ${(totalSize / 1024).toFixed(1)} KB\x1b[0m`);
+          // Preview MEMORY.md
+          try {
+            const content = fs.readFileSync(path.join(MEMORY_DIR, "MEMORY.md"), "utf-8").trim();
+            if (content) {
+              const preview = content.length > 300 ? content.slice(0, 300) + "..." : content;
+              console.log(`\x1b[2m\nMEMORY.md preview:\x1b[0m`);
+              console.log(`\x1b[2m${preview}\x1b[0m`);
+            }
+          } catch {
+            // No MEMORY.md
+          }
+          console.log();
+        }
+      } catch {
+        console.log(`\x1b[2mNo memory directory yet: ${MEMORY_DIR}\x1b[0m\n`);
+      }
+      continue;
+    }
 
     // Run agent
     const startTime = Date.now();
@@ -451,7 +497,10 @@ async function main() {
       });
       await resourceLoader.reload();
 
-      // Rebuild system prompt with current thinking level
+      // Reload memory (agent may have written to MEMORY.md during previous turn)
+      memoryContent = loadMemoryFile();
+
+      // Rebuild system prompt with current thinking level and fresh memory
       const currentSystemPrompt = buildSystemPrompt({
         workspaceDir,
         runtime,
@@ -459,6 +508,7 @@ async function main() {
         contextFiles,
         thinkingLevel,
         skillsPrompt,
+        memoryContent,
       });
 
       // Wrap all tools with loop detection (built-in + custom)

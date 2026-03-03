@@ -397,14 +397,95 @@ git checkout part-5/context-compaction
 
 ---
 
+## Part 6: Persistent Memory
+
+> `git checkout part-6/persistent-memory`
+
+Part 6 adds cross-session memory — the agent remembers user preferences, project context, and past decisions across sessions and restarts. Plain Markdown files, keyword search, zero new dependencies.
+
+### What you get
+
+- **Persistent memory** — memories stored as Markdown files in `~/.openclaw-mini/memory/`, surviving across `/new` and restarts.
+- **Auto-injection** — `MEMORY.md` contents are loaded into the system prompt every conversation. The agent sees your preferences and context without being asked.
+- **`memory_search` tool** — keyword search across all memory files with surrounding context. The agent uses this automatically when you reference past conversations or preferences.
+- **No new dependencies** — the agent saves memories using its existing `write` and `edit` tools. ~210 lines total.
+
+### REPL commands (Part 6 — new)
+
+| Command | Description |
+|---|---|
+| `/memory` | List memory files with sizes and preview MEMORY.md |
+
+All previous commands continue to work.
+
+### Try it
+
+```
+┌ openclaw-mini
+│ model: anthropic/claude-sonnet-4-20250514
+│ workspace: /Users/you/project
+│ tools: read, bash, edit, write, web_fetch, web_search, memory_search
+│ memory: empty (~/.openclaw-mini/memory/)
+└ /new /think /model /skills /verbose /compact /memory /quit
+
+> remember that I prefer TypeScript and use pnpm
+[tools: write]
+Saved to ~/.openclaw-mini/memory/MEMORY.md.
+(2.1s)
+
+> /memory
+Memory files (1):
+  MEMORY.md (main) — 0.1 KB
+  total: 0.1 KB
+
+MEMORY.md preview:
+# User Preferences
+- Prefers TypeScript over JavaScript
+- Uses pnpm (not npm)
+
+> /new
+New session: mini-1719432060000
+
+> what package manager should I use?
+[tools: memory_search]
+Based on your preferences, you should use **pnpm**.
+(1.8s)
+```
+
+### What changed
+
+| File | Change |
+|---|---|
+| `src/tools/memory-search.ts` | New — `memory_search` tool (~100 lines): keyword search across `~/.openclaw-mini/memory/*.md` with ±2 lines of context, capped at 50 matches |
+| `src/system-prompt.ts` | ~60 lines added — `loadMemoryFile()` for auto-injection, Memory section with save/search instructions, `memory_search` in tool summaries |
+| `src/entry.ts` | ~50 lines added — memory dir in `ensureDirs()`, tool registration, `/memory` command, memory reload each prompt, banner with memory status |
+
+### Key details
+
+- Memory files live at `~/.openclaw-mini/memory/` — `MEMORY.md` (main, always loaded) plus topic files like `typescript.md`, `project-acme.md`
+- MEMORY.md is truncated at 200 lines in the system prompt; use `memory_search` for full content
+- Memory is reloaded fresh each prompt — if the agent writes to MEMORY.md in one turn, the next turn sees the update
+- The agent is instructed what to remember (preferences, project context, corrections) and what to skip (secrets, trivial questions, temporary state)
+- Search caps at 50 matches and 10,000 characters to protect context window budget
+- Large files (>100KB) are truncated during search; unreadable files are silently skipped
+
+### Branch
+
+```
+git checkout part-6/persistent-memory
+```
+
+---
+
 ## Project Structure
 
 ```
 src/
 ├── entry.ts                # Main REPL, session management, skill discovery
-├── system-prompt.ts        # System prompt builder with context and skill injection
+├── system-prompt.ts        # System prompt builder with context, skill, and memory injection
 ├── tool-loop-detection.ts  # Circuit breaker for stuck tool loops
 └── tools/
+    ├── memory-search.ts    # Keyword search across persistent memory files
     ├── web-fetch.ts        # URL content fetching via Mozilla Readability
     └── web-search.ts       # Web search (Brave Search / Perplexity)
 skills/

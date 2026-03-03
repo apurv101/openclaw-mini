@@ -63,6 +63,26 @@ export function detectRuntime(provider: string, modelId: string): RuntimeInfo {
   };
 }
 
+// ─── Memory file loading ─────────────────────────────────────────────────────
+
+const MEMORY_DIR = path.join(os.homedir(), ".openclaw-mini", "memory");
+const MEMORY_FILE = path.join(MEMORY_DIR, "MEMORY.md");
+const MEMORY_MAX_LINES = 200;
+
+export function loadMemoryFile(): string | null {
+  try {
+    const content = fs.readFileSync(MEMORY_FILE, "utf-8").trim();
+    if (!content) return null;
+    const lines = content.split("\n");
+    if (lines.length > MEMORY_MAX_LINES) {
+      return lines.slice(0, MEMORY_MAX_LINES).join("\n") + "\n\n[Truncated — use memory_search for full content]";
+    }
+    return content;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Tool summaries ──────────────────────────────────────────────────────────
 
 const CORE_TOOL_SUMMARIES: Record<string, string> = {
@@ -80,6 +100,7 @@ const CORE_TOOL_SUMMARIES: Record<string, string> = {
   web_fetch: "Fetch and extract readable content from a URL",
   browser: "Control web browser",
   image: "Analyze an image with the configured image model",
+  memory_search: "Search persistent memory files by keyword",
 };
 
 // ─── System prompt builder ───────────────────────────────────────────────────
@@ -91,8 +112,9 @@ export function buildSystemPrompt(params: {
   contextFiles: ContextFile[];
   thinkingLevel?: string;
   skillsPrompt?: string;
+  memoryContent?: string | null;
 }): string {
-  const { workspaceDir, runtime, toolNames, contextFiles, thinkingLevel, skillsPrompt } = params;
+  const { workspaceDir, runtime, toolNames, contextFiles, thinkingLevel, skillsPrompt, memoryContent } = params;
 
   const availableTools = new Set(toolNames.map((t) => t.toLowerCase()));
 
@@ -157,6 +179,51 @@ export function buildSystemPrompt(params: {
   // Skills catalog
   if (skillsPrompt) {
     lines.push("## Skills", skillsPrompt, "");
+  }
+
+  // Memory system
+  lines.push(
+    "## Memory",
+    "",
+    "You have persistent memory stored in ~/.openclaw-mini/memory/.",
+    "- MEMORY.md: your main memory file, always loaded below (if it exists)",
+    "- Topic files (e.g., typescript.md, project-acme.md): detailed notes on specific topics",
+    "",
+    "### Reading Memory",
+    "- MEMORY.md contents are shown below automatically each conversation",
+    "- Use the memory_search tool to search across ALL memory files by keyword",
+    "- Search when the user references past conversations, preferences, or project context",
+    "",
+    "### Saving Memory",
+    "Use the existing write and edit tools to save to memory files:",
+    "- Save to ~/.openclaw-mini/memory/MEMORY.md for important, frequently-needed facts",
+    "- Save to ~/.openclaw-mini/memory/{topic}.md for detailed topic-specific notes",
+    "- MEMORY.md should stay concise (key facts, preferences, project names) — move details to topic files",
+    "",
+    "### What to Remember",
+    "- User preferences (coding style, preferred tools, naming conventions)",
+    "- Project context (tech stack, architecture decisions, key file locations)",
+    "- Corrections the user makes (\"I prefer X over Y\")",
+    "- Important decisions and their rationale",
+    "",
+    "### What NOT to Remember",
+    "- Trivial one-off questions",
+    "- Information already in project files (CONTEXT.md, README, etc.)",
+    "- Sensitive data (passwords, tokens, secrets)",
+    "- Temporary debugging state",
+    "",
+  );
+
+  if (memoryContent) {
+    lines.push("### Current Memory (MEMORY.md)", "", memoryContent, "");
+  } else {
+    lines.push(
+      "### Current Memory (MEMORY.md)",
+      "",
+      "No memory file found. Create one when you learn something worth remembering:",
+      "write ~/.openclaw-mini/memory/MEMORY.md with initial content.",
+      "",
+    );
   }
 
   // Context files
