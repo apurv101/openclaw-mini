@@ -101,6 +101,7 @@ const CORE_TOOL_SUMMARIES: Record<string, string> = {
   browser: "Control web browser",
   image: "Analyze an image with the configured image model",
   memory_search: "Search persistent memory files by keyword",
+  spawn_subagent: "Delegate a task to a child agent with isolated context",
 };
 
 // ─── System prompt builder ───────────────────────────────────────────────────

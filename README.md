@@ -477,6 +477,83 @@ git checkout part-6/persistent-memory
 
 ---
 
+## Part 7: Subagent System
+
+> `git checkout part-7/subagent-system`
+
+Part 7 adds agent orchestration — the parent agent can now spawn child agents with isolated context windows, delegating focused tasks that run to completion and report back. This is the key mental model for composable AI: agents as units of work.
+
+### What you get
+
+- **`spawn_subagent` tool** — the parent agent delegates tasks to child agents, each with its own in-memory session and fresh context window.
+- **Concurrency control** — max 3 concurrent subagents, enforced by an in-memory registry that gates every spawn.
+- **Depth limiting** — structural enforcement: child agents get coding tools (read, write, edit, bash) but NOT `spawn_subagent`, so no grandchildren are possible.
+- **Timeout protection** — `AbortController`-based 5-minute hard timeout with automatic stale entry expiry.
+- **`/agents` command** — view all subagent runs this session with status, duration, and result preview.
+
+### REPL commands (Part 7 — new)
+
+| Command | Description |
+|---|---|
+| `/agents` | Show subagent run history (status, duration, result preview) |
+
+All previous commands continue to work. `/new` also resets the subagent registry.
+
+### Try it
+
+```bash
+pnpm dev
+```
+
+```
+┌ openclaw-mini
+│ model: anthropic/claude-sonnet-4-20250514
+│ workspace: /Users/you/project
+│ tools: read, bash, edit, write, web_fetch, web_search, memory_search, spawn_subagent
+└ /new /think /model /skills /verbose /compact /memory /agents /quit
+
+> use a subagent to find all TODO comments in this project
+
+[tools: spawn_subagent]
+[Subagent completed in 6.2s | Tools used: bash]
+
+The subagent found 12 TODO comments across 5 files...
+(7.0s)
+
+> /agents
+Subagent runs (1):
+  ✓ find all TODO comments in this project (6.2s) The subagent found 12 TODO comments acro...
+```
+
+### What changed
+
+| File | Change |
+|---|---|
+| `src/subagent/types.ts` | New — `SubagentRun` interface, `SubagentConfig` with defaults (max 3 concurrent, depth 1, 5 min timeout) |
+| `src/subagent/registry.ts` | New — `SubagentRegistry` class (~100 lines): in-memory run tracking, concurrency gating, stale cleanup |
+| `src/subagent/prompt.ts` | New — focused system prompt builder for child agents (~20 lines) |
+| `src/subagent/spawn.ts` | New — `spawnSubagent()` (~150 lines): creates child `createAgentSession` with restricted tools, AbortController timeout, result extraction |
+| `src/subagent/tool.ts` | New — `spawn_subagent` tool definition (~75 lines): LLM-callable tool with error handling |
+| `src/entry.ts` | ~50 lines added — `SubagentRegistry` + `SpawnContext` creation, tool registration, `/agents` command, registry reset on `/new` |
+| `src/system-prompt.ts` | 1 line — `spawn_subagent` added to tool summaries |
+
+### Key details
+
+- Child sessions use `SessionManager.inMemory()` — no disk persistence for ephemeral subagents
+- Depth enforcement is structural, not numerical: children don't receive `spawn_subagent` in their tool set
+- Stale cleanup runs automatically before every spawn attempt — entries running longer than 5 minutes are force-expired
+- Errors are returned as tool content (not thrown) so the parent agent can decide how to handle failures
+- The registry resets on `/new` alongside the loop detector and session state
+- ~430 lines across 5 new files
+
+### Branch
+
+```
+git checkout part-7/subagent-system
+```
+
+---
+
 ## Project Structure
 
 ```
@@ -484,6 +561,12 @@ src/
 ├── entry.ts                # Main REPL, session management, skill discovery
 ├── system-prompt.ts        # System prompt builder with context, skill, and memory injection
 ├── tool-loop-detection.ts  # Circuit breaker for stuck tool loops
+├── subagent/
+│   ├── types.ts            # SubagentRun, SubagentConfig interfaces and defaults
+│   ├── registry.ts         # In-memory registry with concurrency gating and stale cleanup
+│   ├── prompt.ts           # Focused system prompt for child agents
+│   ├── spawn.ts            # Child session creation, execution, and timeout
+│   └── tool.ts             # spawn_subagent tool definition
 └── tools/
     ├── memory-search.ts    # Keyword search across persistent memory files
     ├── web-fetch.ts        # URL content fetching via Mozilla Readability

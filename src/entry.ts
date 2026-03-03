@@ -37,6 +37,10 @@ import { createWebFetchToolDefinition } from "./tools/web-fetch.js";
 import { createWebSearchToolDefinition } from "./tools/web-search.js";
 import { createMemorySearchToolDefinition } from "./tools/memory-search.js";
 import { ToolLoopDetector } from "./tool-loop-detection.js";
+import { SubagentRegistry } from "./subagent/registry.js";
+import { createSubagentToolDefinition } from "./subagent/tool.js";
+import { DEFAULT_CONFIG as SUBAGENT_DEFAULT_CONFIG } from "./subagent/types.js";
+import type { SpawnContext } from "./subagent/spawn.js";
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -171,7 +175,7 @@ function resolveSessionFile(sessionId: string): string {
 
 // ─── Custom tools ────────────────────────────────────────────────────────────
 
-function buildCustomTools() {
+function buildCustomTools(spawnContext?: SpawnContext) {
   const tools: any[] = [];
 
   // Always add web_fetch — it's useful regardless of API keys
@@ -182,6 +186,11 @@ function buildCustomTools() {
 
   // Persistent memory search across ~/.openclaw-mini/memory/*.md
   tools.push(createMemorySearchToolDefinition());
+
+  // Subagent delegation — spawn child agents with isolated context windows
+  if (spawnContext) {
+    tools.push(createSubagentToolDefinition(spawnContext));
+  }
 
   return tools;
 }
@@ -293,10 +302,22 @@ async function main() {
 
   const { model, authStorage, modelRegistry } = resolveModelAndAuth(provider, modelId);
 
+  // Subagent system — registry tracks active child agents
+  const subagentRegistry = new SubagentRegistry();
+  const spawnContext: SpawnContext = {
+    workspaceDir,
+    agentDir: AGENT_DIR,
+    authStorage,
+    modelRegistry,
+    model,
+    registry: subagentRegistry,
+    config: SUBAGENT_DEFAULT_CONFIG,
+  };
+
   // Build system prompt
   const runtime = detectRuntime(provider, modelId);
   const contextFiles = loadContextFiles(workspaceDir);
-  const customTools = buildCustomTools();
+  const customTools = buildCustomTools(spawnContext);
   const customToolNames = customTools.map((t: any) => t.name);
 
   // The PI SDK provides these built-in tools (read, bash, edit, write are default active)
@@ -329,7 +350,7 @@ async function main() {
   console.log(`\x1b[2m│ tools: ${allToolNames.join(", ")}\x1b[0m`);
   console.log(`\x1b[2m│ skills: ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : "none"}\x1b[0m`);
   console.log(`\x1b[2m│ memory: ${memoryContent ? "loaded" : "empty"} (~/.openclaw-mini/memory/)\x1b[0m`);
-  console.log(`\x1b[2m└ /new /think /model /skills /verbose /compact /memory /quit\x1b[0m`);
+  console.log(`\x1b[2m└ /new /think /model /skills /verbose /compact /memory /agents /quit\x1b[0m`);
   console.log();
 
   const rl = readline.createInterface({ input: stdin, output: stdout });
@@ -352,6 +373,7 @@ async function main() {
       sessionId = `mini-${Date.now()}`;
       sessionFile = resolveSessionFile(sessionId);
       loopDetector.reset();
+      subagentRegistry.reset();
       console.log(`\x1b[2mNew session: ${sessionId}\x1b[0m\n`);
       continue;
     }
@@ -466,6 +488,29 @@ async function main() {
         }
       } catch {
         console.log(`\x1b[2mNo memory directory yet: ${MEMORY_DIR}\x1b[0m\n`);
+      }
+      continue;
+    }
+    if (trimmed === "/agents") {
+      const runs = subagentRegistry.getAll();
+      if (runs.length === 0) {
+        console.log(`\x1b[2mNo subagent runs this session.\x1b[0m\n`);
+      } else {
+        console.log(`\x1b[2mSubagent runs (${runs.length}):\x1b[0m`);
+        for (const run of runs) {
+          const duration = run.endedAt
+            ? `${((run.endedAt - run.startedAt) / 1000).toFixed(1)}s`
+            : `${((Date.now() - run.startedAt) / 1000).toFixed(0)}s...`;
+          const icon = run.status === "completed" ? "\x1b[32m✓\x1b[0m\x1b[2m"
+            : run.status === "failed" ? "\x1b[31m✗\x1b[0m\x1b[2m"
+            : run.status === "expired" ? "\x1b[33m⏱\x1b[0m\x1b[2m"
+            : "\x1b[34m⏳\x1b[0m\x1b[2m";
+          const preview = run.result
+            ? run.result.slice(0, 60) + (run.result.length > 60 ? "..." : "")
+            : run.error || "";
+          console.log(`\x1b[2m  ${icon} ${run.label} (${duration}) ${preview}\x1b[0m`);
+        }
+        console.log();
       }
       continue;
     }
